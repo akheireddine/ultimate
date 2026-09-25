@@ -8,12 +8,12 @@ file_export_version=3.0
 /instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/Rank\ analysis=NONLINEAR
 
 /instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/Rank\ synthesis\ backend=PASTTEL
-/instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/PaSTTeL\ binary\ path=/home/nissa/Documents/Tools/PaSTTeL/bin/pasttel
+/instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/PaSTTeL\ binary\ path=/home/anissa/Documents/Tools/PaSTTeL/bin/pasttel
 /instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/PaSTTeL\ timeout\ (seconds)=20
 /instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/PaSTTeL\ number\ of\ CPUs=4
 
 /instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/Dump\ SMT\ script\ to\ file=true
-/instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/To\ the\ following\ directory=/home/nissa/Documents/Tools/ultimate/benchmarks/pasttel_dump
+/instance/de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer/To\ the\ following\ directory=/home/anissa/Documents/Tools/PaSTTeL/ultimate/benchmarks/pasttel_dump
 
 
 
@@ -35,4 +35,6 @@ file_export_version=3.0
 file_export_version=3.0
 @UltimateCore=0.0.1
 /instance/UltimateCore/Generate\ benchmark\ results=false
+
+
 
