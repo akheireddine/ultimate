@@ -72,7 +72,7 @@ public final class PasttelExecutor {
 		// own mathematical validity in this pipeline (PasttelResultMapper only checks that it *maps back*, not
 		// that it *holds*; BuchiAutomizer's Hoare-triple checks only run once the certificate is already accepted).
 		final String[] command = { binaryPath, "-a", mode.mCliValue, "-o", "json", "-t",
-				String.valueOf(timeoutSeconds), "-c", String.valueOf(cpus), "-q", "-val", jsonInputFile };
+				String.valueOf(timeoutSeconds), "-c", String.valueOf(cpus), "-q", jsonInputFile };
 		final MonitoredProcess process = MonitoredProcess.exec(command, null, null, services);
 		// Grace period beyond PaSTTeL's own -t: PaSTTeL enforces the timeout itself and exits cleanly: this is a
 		// backstop against the process not honoring it, not the primary timeout mechanism.
