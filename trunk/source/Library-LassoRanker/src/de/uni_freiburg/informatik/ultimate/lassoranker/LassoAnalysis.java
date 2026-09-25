@@ -32,6 +32,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -303,6 +304,15 @@ public class LassoAnalysis {
 	 */
 	public Collection<Lasso> getLassos() {
 		return mLassos;
+	}
+
+	/**
+	 * @return the array index (dis)equalities that map elimination established at the honda while preprocessing
+	 *         {@link #getLassos()}; every {@link TerminationArgument} synthesized for these lassos carries them (see
+	 *         {@link TerminationArgumentSynthesizer}).
+	 */
+	public Set<Term> getArrayIndexSupportingInvariants() {
+		return Collections.unmodifiableSet(mArrayIndexSupportingInvariants);
 	}
 
 	public List<TerminationAnalysisBenchmark> getTerminationAnalysisBenchmarks() {

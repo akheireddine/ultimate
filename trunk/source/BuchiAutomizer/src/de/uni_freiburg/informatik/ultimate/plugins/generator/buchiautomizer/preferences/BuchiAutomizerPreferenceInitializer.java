@@ -80,6 +80,21 @@ public class BuchiAutomizerPreferenceInitializer extends UltimatePreferenceIniti
 		BUCHI_AUTOMATON, BUCHI_PETRI_NET, RABIN_PETRI_NET
 	}
 
+	/**
+	 * Which engine {@link de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer.LassoCheck} uses to
+	 * synthesize termination/non-termination arguments for a lasso.
+	 */
+	public enum RankSynthesisBackend {
+		/**
+		 * Ultimate's own LassoRanker (Library-LassoRanker), one external SMT solver call per template.
+		 */
+		LASSORANKER,
+		/**
+		 * PaSTTeL (external C++ binary), one call per lasso racing all templates internally in parallel.
+		 */
+		PASTTEL
+	}
+
 	public static final String LABEL_IGNORE_DOWN_STATES = "Ignore down states";
 	public static final String LABEL_DETERMINIZATION_ON_DEMAND = "Determinization on demand";
 	public static final String LABEL_BIA_CONSTRUCTION_STRATEGY = "Buchi interpolant automaton construction strategy";
@@ -105,6 +120,13 @@ public class BuchiAutomizerPreferenceInitializer extends UltimatePreferenceIniti
 	public static final String LABEL_ANALYSIS_TYPE_GNTA = "GNTA analysis";
 	public static final String LABEL_GNTA_DIRECTIONS = "Number of GNTA directions";
 	private static final int DEF_GNTA_DIRECTIONS = 3;
+	public static final String LABEL_RANK_SYNTHESIS_BACKEND = "Rank synthesis backend";
+	public static final String LABEL_PASTTEL_BINARY_PATH = "PaSTTeL binary path";
+	private static final String DEF_PASTTEL_BINARY_PATH = "pasttel";
+	public static final String LABEL_PASTTEL_TIMEOUT_SECONDS = "PaSTTeL timeout (seconds)";
+	private static final int DEF_PASTTEL_TIMEOUT_SECONDS = 20;
+	public static final String LABEL_PASTTEL_CPUS = "PaSTTeL number of CPUs";
+	private static final int DEF_PASTTEL_CPUS = 4;
 	public static final String LABEL_TEMPLATE_BENCHMARK_MODE = "Template benchmark mode";
 	public static final String LABEL_DUMP_SCRIPT_TO_FILE = "Dump SMT script to file";
 	public static final String LABEL_DUMP_SCRIPT_PATH = "To the following directory";
@@ -182,6 +204,13 @@ public class BuchiAutomizerPreferenceInitializer extends UltimatePreferenceIniti
 				new UltimatePreferenceItem<>(LABEL_ANALYSIS_TYPE_GNTA, AnalysisType.NONLINEAR, PreferenceType.Combo,
 						AnalysisType.values()),
 				new UltimatePreferenceItem<>(LABEL_GNTA_DIRECTIONS, DEF_GNTA_DIRECTIONS, PreferenceType.Integer),
+				new UltimatePreferenceItem<>(LABEL_RANK_SYNTHESIS_BACKEND, RankSynthesisBackend.LASSORANKER,
+						PreferenceType.Combo, RankSynthesisBackend.values()),
+				new UltimatePreferenceItem<>(LABEL_PASTTEL_BINARY_PATH, DEF_PASTTEL_BINARY_PATH, PreferenceType.String),
+				new UltimatePreferenceItem<>(LABEL_PASTTEL_TIMEOUT_SECONDS, DEF_PASTTEL_TIMEOUT_SECONDS,
+						PreferenceType.Integer, new IUltimatePreferenceItemValidator.IntegerValidator(1, 3600)),
+				new UltimatePreferenceItem<>(LABEL_PASTTEL_CPUS, DEF_PASTTEL_CPUS, PreferenceType.Integer,
+						new IUltimatePreferenceItemValidator.IntegerValidator(1, 256)),
 				new UltimatePreferenceItem<>(LABEL_TEMPLATE_BENCHMARK_MODE, false, PreferenceType.Boolean),
 				new UltimatePreferenceItem<>(LABEL_DUMP_SCRIPT_TO_FILE, false, PreferenceType.Boolean),
 				new UltimatePreferenceItem<>(LABEL_DUMP_SCRIPT_PATH, DEF_DUMP_SCRIPT_PATH, PreferenceType.Directory),

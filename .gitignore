@@ -10,6 +10,8 @@
 hs_err_pid*
 *.md.backup
 
+benchmarks/pasttel_dump
+
 /releaseScripts/default/DeltaDebugger-linux/*
 /releaseScripts/default/DeltaDebugger-win32/*
 /releaseScripts/default/UAutomizer-linux/*
