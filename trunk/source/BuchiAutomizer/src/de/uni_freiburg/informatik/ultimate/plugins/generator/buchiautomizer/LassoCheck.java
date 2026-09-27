@@ -59,6 +59,7 @@ import de.uni_freiburg.informatik.ultimate.core.model.services.IUltimateServiceP
 import de.uni_freiburg.informatik.ultimate.icfgtransformer.transformulatransformers.TermException;
 import de.uni_freiburg.informatik.ultimate.lassoranker.AnalysisType;
 import de.uni_freiburg.informatik.ultimate.lassoranker.DefaultLassoRankerPreferences;
+import de.uni_freiburg.informatik.ultimate.lassoranker.variables.LassoUnderConstruction;
 import de.uni_freiburg.informatik.ultimate.lassoranker.ILassoRankerPreferences;
 import de.uni_freiburg.informatik.ultimate.lassoranker.Lasso;
 import de.uni_freiburg.informatik.ultimate.lassoranker.LassoAnalysis;
@@ -130,6 +131,85 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 
 	enum SynthesisResult {
 		TERMINATING, NONTERMINATING, UNKNOWN, UNCHECKED
+	}
+
+	/**
+	 * What one synthesis scope -- the loop alone, or the whole lasso -- did, for the lasso-trace dump. Filled in by
+	 * {@link LassoCheck#synthesize}. The two scopes of one LassoCheck are kept in separate records so that no timing
+	 * of one is ever added to the other; each is dumped to its own file.
+	 */
+	public static final class SynthesisDump {
+		private boolean mRan;
+		/** The stem as actually analysed: the trivial transformula for the loop-alone scope. */
+		private UnmodifiableTransFormula mAnalysedStemTF;
+		private long mFixpointCheckTimeNs = -1;
+		private String mFixpointCheckResult = "NOT_RUN";
+		/** The fork runs strategies in a static order; the dump prints a seed of -1 for that. */
+		private final long mShuffleSeed = -1L;
+		private final List<String> mStrategyOrder = new ArrayList<>();
+		private final List<TerminationAnalysisBenchmark> mTerminationAnalysisBenchmarks = new ArrayList<>();
+		private final List<NonterminationAnalysisBenchmark> mNonterminationAnalysisBenchmarks = new ArrayList<>();
+		private final List<PreprocessingBenchmark> mPreprocessingBenchmarks = new ArrayList<>();
+		private BspmResult mBspmResult;
+		private NonTerminationArgument mNonTerminationArgument;
+		private LassoUnderConstruction mLinearizedLasso;
+		private PreprocessingBenchmark mLinearizedLassoPreprocessingBenchmark;
+
+		public boolean hasRun() {
+			return mRan;
+		}
+
+		public UnmodifiableTransFormula getAnalysedStemTF() {
+			return mAnalysedStemTF;
+		}
+
+		/** Wall time of the one fixpoint check of this scope, in ns; -1 if it did not run. */
+		public long getFixpointCheckTimeNs() {
+			return mFixpointCheckTimeNs;
+		}
+
+		public String getFixpointCheckResult() {
+			return mFixpointCheckResult;
+		}
+
+		public long getShuffleSeed() {
+			return mShuffleSeed;
+		}
+
+		/** Strategies attempted in this scope, in call order; empty if the scope did not run. */
+		public List<String> getStrategyOrder() {
+			return mStrategyOrder;
+		}
+
+		public List<TerminationAnalysisBenchmark> getTerminationAnalysisBenchmarks() {
+			return mTerminationAnalysisBenchmarks;
+		}
+
+		public List<NonterminationAnalysisBenchmark> getNonterminationAnalysisBenchmarks() {
+			return mNonterminationAnalysisBenchmarks;
+		}
+
+		public List<PreprocessingBenchmark> getPreprocessingBenchmarks() {
+			return mPreprocessingBenchmarks;
+		}
+
+		/** Ranking function and supporting invariants, if this scope proved termination. */
+		public BspmResult getBspmResult() {
+			return mBspmResult;
+		}
+
+		/** Nontermination argument, if this scope proved nontermination. */
+		public NonTerminationArgument getNonTerminationArgument() {
+			return mNonTerminationArgument;
+		}
+
+		public LassoUnderConstruction getLinearizedLasso() {
+			return mLinearizedLasso;
+		}
+
+		public PreprocessingBenchmark getLinearizedLassoPreprocessingBenchmark() {
+			return mLinearizedLassoPreprocessingBenchmark;
+		}
 	}
 
 	enum LassoPart {
@@ -214,6 +294,13 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	private NestedWord<L> mConcatenatedCounterexample;
 
 	private NonTerminationArgument mNonterminationArgument;
+
+	// --- Lasso-trace dump state -------------------------------------------------------------------------------
+	// Read only by AbstractBuchiCegarLoop.exportLassoTraceReport(); none of it feeds the analysis.
+	// One record per synthesis scope, never merged: a LassoCheck may synthesize on the loop alone and then on the
+	// whole lasso, and each scope is dumped to its own file with its own timings.
+	private final SynthesisDump mLoopDump = new SynthesisDump();
+	private final SynthesisDump mLassoDump = new SynthesisDump();
 
 	private final SmtFunctionsAndAxioms mSmtSymbols;
 	private final IUltimateServiceProvider mServices;
@@ -342,6 +429,52 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		return mNonterminationArgument;
 	}
 
+	/** Dump record of the synthesis on the whole lasso (stem + loop). */
+	public SynthesisDump getLassoDump() {
+		return mLassoDump;
+	}
+
+	/** Dump record of the synthesis on the loop alone; {@link SynthesisDump#hasRun()} is false if none took place. */
+	public SynthesisDump getLoopDump() {
+		return mLoopDump;
+	}
+
+	private SynthesisDump dumpFor(final boolean withStem) {
+		return withStem ? mLassoDump : mLoopDump;
+	}
+
+	public boolean isPartitioneerEnabled() {
+		return new DefaultLassoRankerPreferences().isEnablePartitioneer();
+	}
+
+	public AnalysisType getRankAnalysisType() {
+		return mRankAnalysisType;
+	}
+
+	public AnalysisType getGntaAnalysisType() {
+		return mGntaAnalysisType;
+	}
+
+	public int getGntaDirections() {
+		return mGntaDirections;
+	}
+
+	public boolean isSimplifyTerminationArgument() {
+		return mTrySimplificationTerminationArgument;
+	}
+
+	public boolean isTemplateBenchmarkMode() {
+		return mTemplateBenchmarkMode;
+	}
+
+	/**
+	 * Record that {@code name} was attempted, in this scope, in call order. The dump prints these under
+	 * "STRATEGY SHUFFLE"; with a static order the accompanying seed stays -1.
+	 */
+	private void recordStrategyAttempt(final boolean withStem, final String name) {
+		dumpFor(withStem).mStrategyOrder.add(name);
+	}
+
 	public List<PreprocessingBenchmark> getPreprocessingBenchmarks() {
 		return mPreprocessingBenchmarks;
 	}
@@ -357,7 +490,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	/**
 	 * Compute TransFormula that represents the stem.
 	 */
-	protected UnmodifiableTransFormula computeStemTF() {
+	public UnmodifiableTransFormula computeStemTF() {
 		final NestedWord<L> stem = mCounterexample.getStem().getWord();
 		try {
 			final UnmodifiableTransFormula stemTF = computeTF(stem, SIMPLIFY_STEM_AND_LOOP, true, false);
@@ -375,7 +508,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	/**
 	 * Compute TransFormula that represents the loop.
 	 */
-	protected UnmodifiableTransFormula computeLoopTF() {
+	public UnmodifiableTransFormula computeLoopTF() {
 		final NestedWord<L> loop = mCounterexample.getLoop().getWord();
 		try {
 			final UnmodifiableTransFormula loopTF = computeTF(loop, SIMPLIFY_STEM_AND_LOOP, true, false);
@@ -646,6 +779,60 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		return winner.has("technique_name") ? winner.get("technique_name").getAsString() : "?";
 	}
 
+	/**
+	 * Build, purely for the trace dump, one unified linearized lasso (partitioneer off) into {@code dump}. With
+	 * {@code trivialStem} the stem is the trivial transformula, matching what a loop-alone synthesis analyses. Best
+	 * effort: a failure here must never disturb the analysis, so it is caught and only logged.
+	 */
+	private void precomputeLinearizedLasso(final SynthesisDump dump, final boolean trivialStem) {
+		try {
+			final UnmodifiableTransFormula stemTF = trivialStem
+					? TransFormulaBuilder.getTrivialTransFormula(mCsToolkit.getManagedScript())
+					: computeTF(mCounterexample.getStem().getWord(), SIMPLIFY_STEM_AND_LOOP, true, false);
+			final UnmodifiableTransFormula loopTF =
+					computeTF(mCounterexample.getLoop().getWord(), SIMPLIFY_STEM_AND_LOOP, true, false);
+			final ILassoRankerPreferences noPartitionPrefs = constructLassoRankerPreferencesNoPartition(
+					NlaHandling.OVERAPPROXIMATE, AnalysisTechnique.RANKING_FUNCTIONS_SUPPORTING_INVARIANTS);
+			final LassoAnalysis laPreprocess = new LassoAnalysis(mCsToolkit, stemTF, loopTF,
+					mModifiableGlobalsAtHonda, mSmtSymbols, noPartitionPrefs, mServices, mSimplificationTechnique);
+			dump.mLinearizedLassoPreprocessingBenchmark = laPreprocess.getPreprocessingBenchmark();
+			final List<LassoUnderConstruction> lucs = laPreprocess.getPreprocessedLassosUC();
+			if (lucs != null && !lucs.isEmpty()) {
+				dump.mLinearizedLasso = lucs.get(0);
+			}
+		} catch (final Exception e) {
+			mLogger.warn("Could not precompute linearized lasso for dump: " + e.getMessage());
+		}
+	}
+
+	/**
+	 * Same preferences as {@link #constructLassoRankerPreferences}, but with the partitioneer off and SMT dumping
+	 * suppressed. Used only to build the single unified linearized lasso that the trace dump prints: with the
+	 * partitioneer on, preprocessing yields several components and there is no one formula to show.
+	 */
+	private ILassoRankerPreferences constructLassoRankerPreferencesNoPartition(final NlaHandling nlaHandling,
+			final AnalysisTechnique analysis) {
+		final ILassoRankerPreferences base = constructLassoRankerPreferences(true, true, nlaHandling, analysis);
+		return new ILassoRankerPreferences() {
+			@Override public boolean isComputeIntegralHull() { return base.isComputeIntegralHull(); }
+			@Override public boolean isEnablePartitioneer() { return false; }
+			@Override public boolean isAnnotateTerms() { return base.isAnnotateTerms(); }
+			@Override public boolean isExternalSolver() { return base.isExternalSolver(); }
+			@Override public String getExternalSolverCommand() { return base.getExternalSolverCommand(); }
+			@Override public boolean isDumpSmtSolverScript() { return false; }
+			@Override public String getPathOfDumpedScript() { return base.getPathOfDumpedScript(); }
+			@Override public String getBaseNameOfDumpedScript() { return base.getBaseNameOfDumpedScript(); }
+			@Override public boolean isOverapproximateArrayIndexConnection() { return base.isOverapproximateArrayIndexConnection(); }
+			@Override public NlaHandling getNlaHandling() { return base.getNlaHandling(); }
+			@Override public boolean isUseOldMapElimination() { return base.isUseOldMapElimination(); }
+			@Override public boolean isMapElimAddInequalities() { return base.isMapElimAddInequalities(); }
+			@Override public boolean isMapElimOnlyTrivialImplicationsIndexAssignment() { return base.isMapElimOnlyTrivialImplicationsIndexAssignment(); }
+			@Override public boolean isMapElimOnlyTrivialImplicationsArrayWrite() { return base.isMapElimOnlyTrivialImplicationsArrayWrite(); }
+			@Override public boolean isMapElimOnlyIndicesInFormula() { return base.isMapElimOnlyIndicesInFormula(); }
+			@Override public boolean isFakeNonIncrementalScript() { return base.isFakeNonIncrementalScript(); }
+		};
+	}
+
 	private ILassoRankerPreferences constructLassoRankerPreferences(final boolean withStem,
 			final boolean overapproximateArrayIndexConnection, final NlaHandling nlaHandling,
 			final AnalysisTechnique analysis) {
@@ -811,8 +998,22 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		// loopVars);
 		// }
 
+		final SynthesisDump dump = dumpFor(withStem);
+		dump.mRan = true;
+		dump.mAnalysedStemTF = stemTF;
+		if (!withStem) {
+			// The whole-lasso record is precomputed once per LassoCheck, from the real stem; this scope analyses the
+			// loop from the trivial stem, and its dump must show that same formula.
+			precomputeLinearizedLasso(dump, true);
+		}
+
+		// FixpointCheck does its work in its constructor, so the constructor is the whole cost.
+		recordStrategyAttempt(withStem, "FIXPOINT");
+		final long fixpointStartNs = System.nanoTime();
 		final FixpointCheck fixpointCheck = new FixpointCheck(mServices, mLogger, mCsToolkit.getManagedScript(),
 				mModifiableGlobalsAtHonda, stemTF, loopTF);
+		dump.mFixpointCheckTimeNs = System.nanoTime() - fixpointStartNs;
+		dump.mFixpointCheckResult = fixpointCheck.getResult().toString();
 		if (fixpointCheck.getResult() == HasFixpoint.YES) {
 			if (withStem) {
 				if (TRACE_CHECK_BASED_FIXPOINT_CHECK && !BuchiAutomizerUtils.isEmptyStem(mCounterexample.getStem())) {
@@ -829,6 +1030,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 					mNonterminationArgument = fixpointCheck.getTerminationArgument();
 				}
 			}
+			dump.mNonTerminationArgument = withStem ? mNonterminationArgument : fixpointCheck.getTerminationArgument();
 			return SynthesisResult.NONTERMINATING;
 		}
 
@@ -850,6 +1052,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 								NlaHandling.UNDERAPPROXIMATE, AnalysisTechnique.GEOMETRIC_NONTERMINATION_ARGUMENTS),
 						mServices, mSimplificationTechnique);
 				mPreprocessingBenchmarks.add(laNT.getPreprocessingBenchmark());
+				dump.mPreprocessingBenchmarks.add(laNT.getPreprocessingBenchmark());
 			} catch (final TermException e) {
 				e.printStackTrace();
 				throw new AssertionError("TermException " + e);
@@ -865,10 +1068,12 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			final boolean terminationAlreadyProven = pasttelBoth != null && pasttelBoth.terminationArgument() != null;
 			try {
 				if (nonTermArgument == null && !terminationAlreadyProven) {
+					recordStrategyAttempt(withStem, "GNTA");
 					final NonTerminationAnalysisSettings settings = constructNTASettings();
 					nonTermArgument = laNT.checkNonTermination(settings);
 					final List<NonterminationAnalysisBenchmark> benchs = laNT.getNonterminationAnalysisBenchmarks();
 					mNonterminationAnalysisBenchmarks.addAll(benchs);
+					dump.mNonterminationAnalysisBenchmarks.addAll(benchs);
 				}
 			} catch (final SMTLIBException e) {
 				e.printStackTrace();
@@ -877,6 +1082,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 				e.printStackTrace();
 				throw new AssertionError("TermException " + e);
 			}
+			dump.mNonTerminationArgument = nonTermArgument;
 			if (withStem) {
 				mNonterminationArgument = nonTermArgument;
 			}
@@ -930,12 +1136,13 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		TerminationArgument termArg =
 				pasttelBoth != null ? pasttelBoth.terminationArgument() : tryPasttelTermination(laT, withStem);
 		if (termArg == null) {
-			termArg = tryTemplatesAndComputePredicates(laT, rankingFunctionTemplates, stemTF, loopTF);
+			termArg = tryTemplatesAndComputePredicates(laT, rankingFunctionTemplates, stemTF, loopTF, withStem);
 		}
 		assert nonTermArgument == null || termArg == null : " terminating and nonterminating";
 		if (termArg != null) {
 			mBspmResult = mBspm.computePredicates(termArg, mRemoveSuperfluousSupportingInvariants, stemTF, loopTF,
 					mModifiableGlobalsAtHonda);
+			dump.mBspmResult = mBspmResult;
 			return SynthesisResult.TERMINATING;
 		}
 		if (nonTermArgument != null) {
@@ -954,6 +1161,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 							NlaHandling.OVERAPPROXIMATE, AnalysisTechnique.RANKING_FUNCTIONS_SUPPORTING_INVARIANTS),
 					mServices, mSimplificationTechnique);
 			mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
+			dumpFor(withStem).mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
 			return laT;
 		} catch (final TermException e) {
 			e.printStackTrace();
@@ -963,18 +1171,26 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 
 	private TerminationArgument tryTemplatesAndComputePredicates(final LassoAnalysis la,
 			final List<RankingTemplate> rankingFunctionTemplates, final UnmodifiableTransFormula stemTF,
-			final UnmodifiableTransFormula loopTF) throws AssertionError, IOException {
+			final UnmodifiableTransFormula loopTF, final boolean withStem) throws AssertionError, IOException {
 		TerminationArgument firstTerminationArgument = null;
 		for (final RankingTemplate rft : rankingFunctionTemplates) {
 			TerminationArgument termArg;
 			try {
 				final TerminationAnalysisSettings settings = constructTASettings();
+				recordStrategyAttempt(withStem, rft.getName());
+				// la keeps a cumulative benchmark list across templates, so take only the entries this call appended.
+				// Adding the whole list every round duplicated earlier templates and inflated the reported
+				// termination time by a factor that grew with the number of templates tried.
+				final int nBenchsBefore = la.getTerminationAnalysisBenchmarks().size();
 				termArg = la.tryTemplate(rft, settings);
 				if (!mServices.getProgressMonitorService().continueProcessing()) {
 					throw new ToolchainCanceledException(this.getClass(), generateRunningTaskInfo(stemTF, loopTF, rft));
 				}
-				final List<TerminationAnalysisBenchmark> benchs = la.getTerminationAnalysisBenchmarks();
+				final List<TerminationAnalysisBenchmark> allBenchs = la.getTerminationAnalysisBenchmarks();
+				final List<TerminationAnalysisBenchmark> benchs =
+						allBenchs.subList(nBenchsBefore, allBenchs.size());
 				mTerminationAnalysisBenchmarks.addAll(benchs);
+				dumpFor(withStem).mTerminationAnalysisBenchmarks.addAll(benchs);
 				if (mTemplateBenchmarkMode) {
 					for (final TerminationAnalysisBenchmark bench : benchs) {
 						final IResult benchmarkResult = new StatisticsResult<>(Activator.PLUGIN_ID,
@@ -1035,6 +1251,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			mLogger.info("Stem: " + stem);
 			final NestedWord<L> loop = mCounterexample.getLoop().getWord();
 			mLogger.info("Loop: " + loop);
+			precomputeLinearizedLasso(mLassoDump, false);
 			mStemFeasibility = checkStemFeasibility();
 			if (mStemFeasibility == TraceCheckResult.INFEASIBLE) {
 				mLogger.info("stem already infeasible");

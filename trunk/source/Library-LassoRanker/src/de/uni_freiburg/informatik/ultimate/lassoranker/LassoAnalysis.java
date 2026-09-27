@@ -68,6 +68,7 @@ import de.uni_freiburg.informatik.ultimate.lassoranker.termination.TerminationAr
 import de.uni_freiburg.informatik.ultimate.lassoranker.termination.TerminationArgumentSynthesizer;
 import de.uni_freiburg.informatik.ultimate.lassoranker.termination.templates.RankingTemplate;
 import de.uni_freiburg.informatik.ultimate.lassoranker.variables.LassoBuilder;
+import de.uni_freiburg.informatik.ultimate.lassoranker.variables.LassoUnderConstruction;
 import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.CfgSmtToolkit;
 import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.IIcfgSymbolTable;
 import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.SmtFunctionsAndAxioms;
@@ -164,6 +165,13 @@ public class LassoAnalysis {
 	 * Benchmark data from the preprocessing of the lasso.
 	 */
 	private PreprocessingBenchmark mPreprocessingBenchmark;
+
+	/**
+	 * The fully preprocessed lasso components, captured after all preprocessors have run but before
+	 * {@code constructPolyhedra()} turns them into {@link Lasso}s. Only the lasso-trace dump reads this; 
+	 * itself works from {@link #mLassos}.
+	 */
+	private List<LassoUnderConstruction> mPreprocessedLassosUC;
 	private final CfgSmtToolkit mCfgSmtToolkit;
 
 	/**
@@ -248,6 +256,7 @@ public class LassoAnalysis {
 				getPreProcessors(lassoBuilder, false));
 
 		mPreprocessingBenchmark = lassoBuilder.getPreprocessingBenchmark();
+		mPreprocessedLassosUC = new ArrayList<>(lassoBuilder.getLassosUC());
 
 		lassoBuilder.constructPolyhedra();
 
@@ -325,6 +334,10 @@ public class LassoAnalysis {
 
 	public PreprocessingBenchmark getPreprocessingBenchmark() {
 		return mPreprocessingBenchmark;
+	}
+
+	public List<LassoUnderConstruction> getPreprocessedLassosUC() {
+		return mPreprocessedLassosUC;
 	}
 
 	protected String benchmarkScriptMessage(final LBool constraintSat, final RankingTemplate template) {

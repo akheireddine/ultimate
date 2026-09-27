@@ -28,6 +28,29 @@
  */
 package de.uni_freiburg.informatik.ultimate.plugins.generator.buchiautomizer.cegar;
 
+import java.util.Map;
+import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.transitions.UnmodifiableTransFormula;
+import de.uni_freiburg.informatik.ultimate.lassoranker.nontermination.NonTerminationArgument;
+import de.uni_freiburg.informatik.ultimate.lassoranker.nontermination.GeometricNonTerminationArgument;
+import de.uni_freiburg.informatik.ultimate.lassoranker.nontermination.InfiniteFixpointRepetition;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.stream.Collectors;
+import de.uni_freiburg.informatik.ultimate.lassoranker.LassoAnalysis.PreprocessingBenchmark;
+import de.uni_freiburg.informatik.ultimate.lassoranker.termination.NonterminationAnalysisBenchmark;
+import de.uni_freiburg.informatik.ultimate.lassoranker.termination.SupportingInvariant;
+import de.uni_freiburg.informatik.ultimate.lassoranker.termination.TerminationAnalysisBenchmark;
+import de.uni_freiburg.informatik.ultimate.lassoranker.termination.TerminationArgument;
+import de.uni_freiburg.informatik.ultimate.lassoranker.variables.LassoUnderConstruction;
+import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.transitions.ModifiableTransFormula;
+import de.uni_freiburg.informatik.ultimate.lib.modelcheckerutils.cfg.variables.IProgramVar;
+import de.uni_freiburg.informatik.ultimate.logic.FunctionSymbol;
+import de.uni_freiburg.informatik.ultimate.logic.Sort;
+import de.uni_freiburg.informatik.ultimate.logic.Term;
+import de.uni_freiburg.informatik.ultimate.logic.TermVariable;
 import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
@@ -398,6 +421,11 @@ public abstract class AbstractBuchiCegarLoop<L extends IIcfgTransition<?>, A ext
 
 			final ContinueDirective cd = lassoCheck.getLassoCheckResult().getContinueDirective();
 			mBenchmarkGenerator.reportLassoAnalysis(lassoCheck);
+			// One file per synthesis scope, never merged: the whole lasso always, the loop alone when it ran.
+			exportLassoTraceReport(mIteration, lassoCheck, false);
+			if (lassoCheck.getLoopDump().hasRun()) {
+				exportLassoTraceReport(mIteration, lassoCheck, true);
+			}
 			try {
 				switch (cd) {
 				case REFINE_BOTH:
@@ -814,4 +842,492 @@ public abstract class AbstractBuchiCegarLoop<L extends IIcfgTransition<?>, A ext
 		}
 
 	}
+
+	/**
+	 * Write the report of one synthesis scope of {@code lassoCheck}: {@code lasso_trace_<N>.txt} for the whole lasso,
+	 * {@code lasso_trace_<N>_loop.txt} for the loop alone. Every timing, benchmark and proof comes from that scope
+	 * only; the two scopes are never added up. RESULT reports the other scope as UNCHECKED, so that a consumer reading
+	 * "Loop termination" or "Lasso termination" always gets the verdict that matches this file's timings.
+	 */
+	private void exportLassoTraceReport(final int iteration, final LassoCheck<L> lassoCheck,
+			final boolean loopScope) {
+		final File outputDir = new File(System.getProperty("user.dir"), "lasso_traces");
+		if (!outputDir.exists()) {
+			outputDir.mkdirs();
+		}
+		final File outputFile = new File(outputDir, String.format(loopScope ? "lasso_trace_%d_loop.txt" : "lasso_trace_%d.txt", iteration));
+
+		try (PrintWriter pw = new PrintWriter(new FileWriter(outputFile))) {
+			pw.println("========================================");
+			pw.printf("LASSO TRACE REPORT - Iteration #%d%n", iteration);
+			pw.println("========================================");
+			pw.println();
+
+			final var lcr = lassoCheck.getLassoCheckResult();
+			final LassoCheck.SynthesisDump d = loopScope ? lassoCheck.getLoopDump() : lassoCheck.getLassoDump();
+			// The stem this scope analysed: the trivial one for the loop alone -- always shown, since it is what the
+			// timings below were measured on -- and the real one, when feasible, for the whole lasso.
+			final boolean stemShown = loopScope || lcr.getStemFeasibility() == TraceCheckResult.FEASIBLE;
+
+			// --- VARIABLE TYPES AND FUNCTION SIGNATURES ---
+			pw.println("--- VARIABLE TYPES AND FUNCTION SIGNATURES ---");
+			try {
+				// Collect variables from stem and loop TransFormulas
+				final Map<String, Sort> allVariables = new LinkedHashMap<>();
+				final Set<FunctionSymbol> allFunctions = new LinkedHashSet<>();
+
+				if (stemShown) {
+					final UnmodifiableTransFormula stemTF =
+							loopScope ? d.getAnalysedStemTF() : lassoCheck.computeStemTF();
+					collectVariablesAndFunctions(stemTF, allVariables, allFunctions);
+				}
+				if (lcr.getLoopFeasibility() == TraceCheckResult.FEASIBLE) {
+					final UnmodifiableTransFormula loopTF = lassoCheck.computeLoopTF();
+					collectVariablesAndFunctions(loopTF, allVariables, allFunctions);
+				}
+				// Also collect linearized variables (TermVariables after preprocessing)
+				final LassoUnderConstruction lucForVars = d.getLinearizedLasso();
+				if (lucForVars != null) {
+					collectLinearizedVariables(lucForVars.getStem(), allVariables);
+					collectLinearizedVariables(lucForVars.getLoop(), allVariables);
+				}
+
+				// Print variable types
+				pw.println("Variables:");
+				if (allVariables.isEmpty()) {
+					pw.println("  (none)");
+				} else {
+					for (final Map.Entry<String, Sort> entry : allVariables.entrySet()) {
+						pw.printf("  %-50s : %s%n", entry.getKey(), entry.getValue());
+					}
+				}
+				pw.println();
+
+				// Print function signatures
+				pw.println("Function signatures:");
+				if (allFunctions.isEmpty()) {
+					pw.println("  (none)");
+				} else {
+					for (final FunctionSymbol func : allFunctions) {
+						final Sort[] paramSorts = func.getParameterSorts();
+						final Sort returnSort = func.getReturnSort();
+						final String params = java.util.Arrays.stream(paramSorts)
+								.map(Sort::toString)
+								.collect(Collectors.joining(", "));
+						pw.printf("  %s(%s) -> %s%n", func.getName(), params, returnSort);
+					}
+				}
+			} catch (final Exception e) {
+				pw.printf("  ERROR extracting types: %s%n", e.getMessage());
+			}
+			pw.println();
+
+			// --- LINEARIZED TRACE (TransFormula) ---
+			pw.println("--- LINEARIZED TRACE (TransFormula) ---");
+			if (stemShown) {
+				try {
+					final UnmodifiableTransFormula stemTF =
+							loopScope ? d.getAnalysedStemTF() : lassoCheck.computeStemTF();
+					pw.println("Stem TransFormula:");
+					pw.println(stemTF);
+				} catch (final Exception e) {
+					pw.printf("Stem TransFormula: ERROR (%s)%n", e.getMessage());
+				}
+			} else {
+				pw.printf("Stem TransFormula: N/A (stem feasibility: %s)%n", lcr.getStemFeasibility());
+			}
+			pw.println();
+			if (lcr.getLoopFeasibility() == TraceCheckResult.FEASIBLE) {
+				try {
+					final UnmodifiableTransFormula loopTF = lassoCheck.computeLoopTF();
+					pw.println("Loop TransFormula:");
+					pw.println(loopTF);
+				} catch (final Exception e) {
+					pw.printf("Loop TransFormula: ERROR (%s)%n", e.getMessage());
+				}
+			} else {
+				pw.printf("Loop TransFormula: N/A (loop feasibility: %s)%n", lcr.getLoopFeasibility());
+			}
+			pw.println();
+
+			// --- PREPROCESSED LINEAR TRACE (partitioner disabled, single formula) ---
+			pw.println("--- PREPROCESSED LINEAR TRACE (partitioner=OFF, single unified formula) ---");
+			final LassoUnderConstruction luc = d.getLinearizedLasso();
+			final PreprocessingBenchmark lucPpBench = d.getLinearizedLassoPreprocessingBenchmark();
+			if (luc == null) {
+				pw.println("  (not available)");
+			} else {
+				// Preprocessing benchmark (time per preprocessor)
+				if (lucPpBench != null) {
+					pw.printf("  Preprocessing initial max DAG size: %d%n", lucPpBench.getIntialMaxDagSizeLassos());
+					final List<String> ppNames = lucPpBench.getPreprocessors();
+					final List<Float> ppRels = lucPpBench.getMaxDagSizeLassosRelative();
+					for (int i = 0; i < ppNames.size(); i++) {
+						pw.printf("    %s -> relative DAG size: %.4f%n", ppNames.get(i), ppRels.get(i));
+					}
+					pw.println();
+				}
+				pw.println("Stem (linearized):");
+				pw.printf("  Formula:  %s%n", luc.getStem().getFormula().toStringDirect());
+				pw.printf("  InVars:   %s%n", luc.getStem().getInVars());
+				pw.printf("  OutVars:  %s%n", luc.getStem().getOutVars());
+				pw.printf("  AuxVars:  %s%n", luc.getStem().getAuxVars());
+				pw.println();
+				pw.println("Loop (linearized):");
+				pw.printf("  Formula:  %s%n", luc.getLoop().getFormula().toStringDirect());
+				pw.printf("  InVars:   %s%n", luc.getLoop().getInVars());
+				pw.printf("  OutVars:  %s%n", luc.getLoop().getOutVars());
+				pw.printf("  AuxVars:  %s%n", luc.getLoop().getAuxVars());
+			}
+			pw.println();
+
+			// --- RAW TRACE ---
+			pw.println("--- RAW TRACE ---");
+			final NestedWord<L> stem = mCounterexample.getStem().getWord();
+			final NestedWord<L> loop = mCounterexample.getLoop().getWord();
+			pw.printf("Stem (length=%d):%n", stem.length());
+			for (int i = 0; i < stem.length(); i++) {
+				pw.printf("  [%d] %s%n", i, stem.getSymbol(i));
+			}
+			pw.printf("Loop (length=%d):%n", loop.length());
+			for (int i = 0; i < loop.length(); i++) {
+				pw.printf("  [%d] %s%n", i, loop.getSymbol(i));
+			}
+			pw.println();
+
+			// --- RESULT ---
+			pw.println("--- RESULT ---");
+			pw.printf("Stem feasibility:    %s%n", lcr.getStemFeasibility());
+			pw.printf("Loop feasibility:    %s%n", lcr.getLoopFeasibility());
+			pw.printf("Concat feasibility:  %s%n", lcr.getConcatFeasibility());
+			pw.printf("Loop termination:    %s%n", loopScope ? lcr.getLoopTermination() : "UNCHECKED");
+			pw.printf("Lasso termination:   %s%n", loopScope ? "UNCHECKED" : lcr.getLassoTermination());
+			pw.printf("Continue directive:  %s%n", lcr.getContinueDirective());
+			pw.println();
+
+			// --- STRATEGY SHUFFLE ---
+			pw.println("--- STRATEGY SHUFFLE ---");
+			final long seedLoop = d.getShuffleSeed();
+			final java.util.List<String> orderLoop = loopScope ? d.getStrategyOrder() : List.of();
+			// empty order: synthesis not run; seed < 0: static order (shuffle disabled)
+			if (!orderLoop.isEmpty()) {
+				pw.printf("  [Loop-only synthesis] %s%n",
+						seedLoop >= 0 ? "Seed: " + seedLoop : "Static order (shuffle disabled)");
+				for (int i = 0; i < orderLoop.size(); i++) {
+					pw.printf("    [%d] %s%n", i + 1, orderLoop.get(i));
+				}
+			} else {
+				pw.println("  [Loop-only synthesis] (not run)");
+			}
+			final long seedLasso = d.getShuffleSeed();
+			final java.util.List<String> orderLasso = loopScope ? List.of() : d.getStrategyOrder();
+			// empty order: synthesis not run; seed < 0: static order (shuffle disabled)
+			if (!orderLasso.isEmpty()) {
+				pw.printf("  [Lasso synthesis]     %s%n",
+						seedLasso >= 0 ? "Seed: " + seedLasso : "Static order (shuffle disabled)");
+				for (int i = 0; i < orderLasso.size(); i++) {
+					pw.printf("    [%d] %s%n", i + 1, orderLasso.get(i));
+				}
+			} else {
+				pw.println("  [Lasso synthesis]     (not run)");
+			}
+			pw.println();
+
+			// --- FIXPOINT CHECK ---
+			pw.println("--- FIXPOINT CHECK ---");
+			pw.printf("  Result: %s%n", d.getFixpointCheckResult());
+			if (d.getFixpointCheckTimeNs() >= 0) {
+				pw.printf("  Time:   %d ns (%.2f ms)%n",
+						d.getFixpointCheckTimeNs(),
+						d.getFixpointCheckTimeNs() / 1_000_000.0);
+			}
+			pw.println();
+
+			// --- NONTERMINATION ARGUMENT ---
+			pw.println("--- NONTERMINATION ARGUMENT ---");
+			final NonTerminationArgument ntArg = d.getNonTerminationArgument();
+			if (ntArg == null) {
+				pw.println("  (none)");
+			} else if (ntArg instanceof GeometricNonTerminationArgument) {
+				final GeometricNonTerminationArgument gntArg = (GeometricNonTerminationArgument) ntArg;
+				pw.println("  Type: GeometricNonTerminationArgument");
+				pw.println("  State at init:");
+				gntArg.getStateInit().forEach((var, val) ->
+						pw.printf("    %-40s = %s%n", var.getGloballyUniqueId(), val));
+				pw.println("  State at honda:");
+				gntArg.getStateHonda().forEach((var, val) ->
+						pw.printf("    %-40s = %s%n", var.getGloballyUniqueId(), val));
+				pw.printf("  Number of GEVs: %d%n", gntArg.getNumberOfGEVs());
+				for (int g = 0; g < gntArg.getNumberOfGEVs(); g++) {
+					pw.printf("  GEV[%d] (lambda=%s):%n", g, gntArg.getLambdas().get(g));
+					gntArg.getGEVs().get(g).forEach((var, val) ->
+							pw.printf("    %-40s = %s%n", var.getGloballyUniqueId(), val));
+				}
+			} else if (ntArg instanceof InfiniteFixpointRepetition) {
+				final InfiniteFixpointRepetition ifr = (InfiniteFixpointRepetition) ntArg;
+				pw.println("  Type: InfiniteFixpointRepetition (detected via FixpointCheck)");
+				pw.println("  Values at init:");
+				ifr.getValuesAtInit().forEach((var, val) ->
+						pw.printf("    %-40s = %s%n", var, val));
+				pw.println("  Values at honda:");
+				ifr.getValuesAtHonda().forEach((var, val) ->
+						pw.printf("    %-40s = %s%n", var, val));
+			} else {
+				pw.printf("  Type: %s%n", ntArg.getClass().getSimpleName());
+				pw.println("  " + ntArg);
+			}
+			pw.println();
+
+			// --- TERMINATION ANALYSIS SETTINGS ---
+			final boolean partitionerOn = lassoCheck.isPartitioneerEnabled();
+			final String partitionerTag = partitionerOn ? "partitioner=ON" : "partitioner=OFF";
+			pw.printf("--- TERMINATION ANALYSIS SETTINGS [%s] ---%n", partitionerTag);
+			pw.printf("  analysis_type:              %s%n", lassoCheck.getRankAnalysisType());
+			pw.println("  num_strict_invariants:      0");
+			pw.println("  num_non_strict_invariants:  1");
+			pw.println("  non_decreasing_invariants:  true");
+			pw.printf("  simplify_termination_arg:   %s%n", lassoCheck.isSimplifyTerminationArgument());
+			pw.printf("  simplify_supporting_invs:   %s%n", lassoCheck.isSimplifyTerminationArgument());
+			pw.println("  overapproximate_stem:       false");
+			pw.printf("  template_benchmark_mode:    %s%n", lassoCheck.isTemplateBenchmarkMode());
+			pw.printf("  partitioner_enabled:        %s%n", partitionerOn);
+			pw.println();
+
+			// --- TERMINATION ANALYSIS BENCHMARKS ---
+			final List<TerminationAnalysisBenchmark> tBenchmarks =
+					d.getTerminationAnalysisBenchmarks();
+			pw.printf("--- TERMINATION ANALYSIS BENCHMARKS [%s] ---%n", partitionerTag);
+			if (tBenchmarks.isEmpty()) {
+				pw.println("  (none)");
+			} else {
+				long totalTTimeNs = 0;
+				for (int i = 0; i < tBenchmarks.size(); i++) {
+					final TerminationAnalysisBenchmark b = tBenchmarks.get(i);
+					final long tTimeNs =
+							(Long) b.getKeyValueMap().get(TerminationAnalysisBenchmark.s_Label_Time);
+					final String satStr = b.getConstraintsSatisfiability().toString();
+					pw.printf("  [%d] Template: %-25s  Degree: %d  Satisfiability: %-7s  Time: %d ns (%.2f ms)%n",
+							i + 1, b.getTemplate(), b.getDegree(), satStr,
+							tTimeNs, tTimeNs / 1_000_000.0);
+					pw.printf("       Variables (stem/loop): %d/%d  Disjuncts (stem/loop): %d/%d%n",
+							b.getVariablesStem(), b.getVariablesLoop(),
+							b.getDisjunctsStem(), b.getDisjunctsLoop());
+					pw.printf("       Supporting invariants: %d  Motzkin applications: %d%n",
+							b.getSupportingInvariants(), b.getMotzkinApplications());
+
+					// Show template-specific parameters
+					final String tpl = b.getTemplate();
+					if ("affine".equals(tpl)) {
+						pw.println("       Template params: f(x) = Σ(ai*xi) + c, delta > 0");
+						pw.println("         Constraints: f(x) > 0 ∧ f(x') <= f(x) - delta");
+					} else if (tpl != null && tpl.endsWith("-nested")) {
+						final String nStr = tpl.replace("-nested", "");
+						pw.printf("         Template params: %s functions f0..f%s, delta > 0%n", nStr, Integer.parseInt(nStr) - 1);
+						pw.println("         Constraints: f0(x') < f0(x) - δ");
+						pw.printf("                      fi(x') < fi(x) + f(i-1)(x) for i=1..%s%n", Integer.parseInt(nStr) - 1);
+						pw.printf("                      f%s(x) > 0%n", Integer.parseInt(nStr) - 1);
+					} else if (tpl != null && tpl.endsWith("-phase")) {
+						final String nStr = tpl.replace("-phase", "");
+						pw.printf("         Template params: %s phases f0..f%s, δ0..δ%s > 0%n", nStr, Integer.parseInt(nStr) - 1, Integer.parseInt(nStr) - 1);
+						pw.println("         Constraints: ∨i fi(x) > 0");
+						pw.println("                      f0(x') < f0(x) - δ0");
+						pw.printf("                      fi(x') < fi(x) - δi ∨ f(i-1)(x) > 0 for i=1..%s%n", Integer.parseInt(nStr) - 1);
+					} else if (tpl != null && tpl.endsWith("-lex")) {
+						final String nStr = tpl.replace("-lex", "");
+						pw.printf("         Template params: %s components f0..f%s, δ0..δ%s > 0%n", nStr, Integer.parseInt(nStr) - 1, Integer.parseInt(nStr) - 1);
+						pw.println("         Constraints: fi(x) > 0 for all i");
+						pw.println("                      ∨i fi(x') < fi(x) - δi");
+						pw.println("                      fi(x') <= fi(x) ∨ ∃j<i: fj(x') < fj(x) - δj");
+					} else if (tpl != null && tpl.endsWith("-piece")) {
+						final String nStr = tpl.replace("-piece", "");
+						pw.printf("         Template params: %s pieces f0..f%s with predicates g0..g%s, delta > 0%n", nStr, Integer.parseInt(nStr) - 1, Integer.parseInt(nStr) - 1);
+						pw.println("         Constraints: fi(x) > 0, ∨i gi(x) >= 0");
+						pw.println("                      gi(x) < 0 ∨ gj(x') < 0 ∨ fj(x') < fi(x) - delta");
+					}
+
+					totalTTimeNs += tTimeNs;
+				}
+				pw.printf("  Total termination analysis time: %.2f ms%n", totalTTimeNs / 1_000_000.0);
+			}
+			pw.println();
+
+			// --- AFFINE TEMPLATE SMT ASSERTS (0 strict, 1 non-strict) ---
+			/*pw.println("--- AFFINE TEMPLATE SMT ASSERTS (0 strict, 1 non-strict) ---");
+			boolean foundAffine = false;
+			for (final TerminationAnalysisBenchmark b : tBenchmarks) {
+				if ("affine".equals(b.getTemplate())
+						&& b.getNumStrictInvariants() == 0
+						&& b.getNumNonStrictInvariants() == 1) {
+					foundAffine = true;
+					final List<Term> asserts = b.getAssertedTerms();
+					pw.printf("  Total assertions: %d (Motzkin applications: %d, SIs: %d)%n",
+							asserts.size(), b.getMotzkinApplications(), b.getSupportingInvariants());
+					pw.println();
+
+					// Collect free TermVariables (Motzkin coefficients) across all assertions
+					final Set<TermVariable> freeVars = new java.util.LinkedHashSet<>();
+					for (final Term t : asserts) {
+						for (final TermVariable tv : t.getFreeVars()) {
+							freeVars.add(tv);
+						}
+					}
+					pw.println("  Free variables (declare-fun):");
+					for (final TermVariable tv : freeVars) {
+						pw.printf("    (declare-fun %s () %s)%n", tv.getName(), tv.getSort());
+					}
+					pw.println();
+
+					pw.println("  Assertions:");
+					int assertIdx = 1;
+					for (final Term t : asserts) {
+						pw.printf("  [%d] (assert %s)%n", assertIdx++, t.toStringDirect());
+					}
+					break; // only the first affine benchmark with 1-strict/0-non-strict
+				}
+			}
+			if (!foundAffine) {
+				pw.println("  (no affine template benchmark with 1-strict/0-non-strict found in this iteration)");
+			}
+			pw.println();*/
+
+			// --- TERMINATION ARGUMENT (if found) ---
+			pw.println("--- TERMINATION ARGUMENT ---");
+			final BspmResult bspmResult = d.getBspmResult();
+			if (bspmResult != null && bspmResult.getTerminationArgument() != null) {
+				final TerminationArgument termArg = bspmResult.getTerminationArgument();
+				final RankingFunction rf = termArg.getRankingFunction();
+				pw.printf("  Ranking function type: %s%n", rf.getName());
+				pw.printf("  Ranking function:      %s%n", rf);
+				pw.println("  Variables:");
+				for (final IProgramVar v : rf.getVariables()) {
+					pw.printf("    %s%n", v.getGloballyUniqueId());
+				}
+				pw.println("  Supporting invariants:");
+				if (termArg.getSupportingInvariants().isEmpty()) {
+					pw.println("    (none)");
+				} else {
+					int siIdx = 0;
+					for (final SupportingInvariant si : termArg.getSupportingInvariants()) {
+						pw.printf("    [%d] %s%n", siIdx++, si);
+					}
+				}
+				if (!termArg.getArrayIndexSupportingInvariants().isEmpty()) {
+					pw.println("  Array index supporting invariants:");
+					int aiIdx = 0;
+					for (final Term t : termArg.getArrayIndexSupportingInvariants()) {
+						pw.printf("    [%d] %s%n", aiIdx++, t.toStringDirect());
+					}
+				}
+			} else {
+				pw.println("  (none)");
+			}
+			pw.println();
+
+			// --- NONTERMINATION ANALYSIS SETTINGS ---
+			pw.printf("--- NONTERMINATION ANALYSIS SETTINGS [%s] ---%n", partitionerTag);
+			pw.printf("  analysis_type:        %s%n", lassoCheck.getGntaAnalysisType());
+			pw.printf("  num_gevs:             %d%n", lassoCheck.getGntaDirections());
+			pw.println("  allow_bounded:        true");
+			pw.println("  nilpotent_components: true");
+			pw.printf("  partitioner_enabled:  %s%n", partitionerOn);
+			pw.println();
+
+			// --- NONTERMINATION ANALYSIS BENCHMARKS ---
+			final List<NonterminationAnalysisBenchmark> ntBenchmarks =
+					d.getNonterminationAnalysisBenchmarks();
+			pw.printf("--- NONTERMINATION ANALYSIS BENCHMARKS [%s] ---%n", partitionerTag);
+			if (ntBenchmarks.isEmpty()) {
+				pw.println("  (none)");
+			} else {
+				long totalNtTimeNs = 0;
+				for (int i = 0; i < ntBenchmarks.size(); i++) {
+					final NonterminationAnalysisBenchmark b = ntBenchmarks.get(i);
+					pw.printf("  [%d] IsFixpoint: %-5s  Satisfiability: %-7s  Time: %d ns (%.2f ms)%n",
+							i + 1, b.isFixpoint(), b.getConstraintsSatisfiability(),
+							b.getTime(), b.getTime() / 1_000_000.0);
+					pw.printf("       Variables (stem/loop): %d/%d  Disjuncts (stem/loop): %d/%d%n",
+							b.getVariablesStem(), b.getVariablesLoop(),
+							b.getDisjunctsStem(), b.getDisjunctsLoop());
+					totalNtTimeNs += b.getTime();
+				}
+				pw.printf("  Total nontermination analysis time: %.2f ms%n", totalNtTimeNs / 1_000_000.0);
+			}
+			pw.println();
+
+			// --- PREPROCESSING BENCHMARKS ---
+			final List<PreprocessingBenchmark> ppBenchmarks =
+					d.getPreprocessingBenchmarks();
+			pw.printf("--- PREPROCESSING BENCHMARKS [%s] ---%n", partitionerTag);
+			if (ppBenchmarks.isEmpty()) {
+				pw.println("  (none)");
+			} else {
+				for (int i = 0; i < ppBenchmarks.size(); i++) {
+					final PreprocessingBenchmark pb = ppBenchmarks.get(i);
+					pw.printf("  [Lasso %d] Initial max DAG size: %d%n", i + 1, pb.getIntialMaxDagSizeLassos());
+					final List<String> preprocessors = pb.getPreprocessors();
+					final List<Float> relatives = pb.getMaxDagSizeLassosRelative();
+					for (int j = 0; j < preprocessors.size(); j++) {
+						pw.printf("    %s -> relative DAG size: %.4f%n",
+								preprocessors.get(j), relatives.get(j));
+					}
+				}
+			}
+			pw.println();
+
+			// --- TIMING SUMMARY ---
+			long totalTNs = 0;
+			for (final TerminationAnalysisBenchmark b : tBenchmarks) {
+				totalTNs += (Long) b.getKeyValueMap().get(TerminationAnalysisBenchmark.s_Label_Time);
+			}
+			long totalNtNs = 0;
+			for (final NonterminationAnalysisBenchmark b : ntBenchmarks) {
+				totalNtNs += b.getTime();
+			}
+			pw.printf("--- TIMING SUMMARY [%s] ---%n", partitionerTag);
+			final long fixpointNs = Math.max(0, d.getFixpointCheckTimeNs());
+			pw.printf("Fixpoint check time:  %.2f ms%n", fixpointNs / 1_000_000.0);
+			// Total of everything this scope ran -- fixpoint, ranking-function templates and GNTA -- each of which is
+			// also listed on its own line below; the other scope is never included.
+			pw.printf("Total LassoRanker time: %.2f ms%n", (fixpointNs + totalTNs + totalNtNs) / 1_000_000.0);
+			pw.printf("  Termination analysis:     %.2f ms%n", totalTNs / 1_000_000.0);
+			pw.printf("  Nontermination analysis:   %.2f ms%n", totalNtNs / 1_000_000.0);
+
+		} catch (final IOException e) {
+			mLogger.warn("Failed to export lasso trace report: " + e.getMessage());
+		}
+	}
+
+	private static void collectVariablesAndFunctions(final UnmodifiableTransFormula tf,
+			final Map<String, Sort> variables, final Set<FunctionSymbol> functions) {
+		// Collect program variables (inVars and outVars) with their sorts
+		for (final Map.Entry<IProgramVar, TermVariable> entry : tf.getInVars().entrySet()) {
+			variables.put(entry.getKey().getGloballyUniqueId(), entry.getKey().getSort());
+		}
+		for (final Map.Entry<IProgramVar, TermVariable> entry : tf.getOutVars().entrySet()) {
+			variables.put(entry.getKey().getGloballyUniqueId(), entry.getKey().getSort());
+		}
+		// Collect auxiliary variables
+		for (final TermVariable auxVar : tf.getAuxVars()) {
+			variables.put(auxVar.getName(), auxVar.getSort());
+		}
+		// Collect non-theory function symbols from the formula
+		final Set<FunctionSymbol> funcSymbols = SmtUtils.extractNonTheoryFunctionSymbols(tf.getFormula());
+		functions.addAll(funcSymbols);
+	}
+
+	private static void collectLinearizedVariables(final ModifiableTransFormula mtf,
+			final Map<String, Sort> variables) {
+		for (final Map.Entry<IProgramVar, TermVariable> entry : mtf.getInVars().entrySet()) {
+			final TermVariable tv = entry.getValue();
+			variables.put(tv.getName(), tv.getSort());
+		}
+		for (final Map.Entry<IProgramVar, TermVariable> entry : mtf.getOutVars().entrySet()) {
+			final TermVariable tv = entry.getValue();
+			variables.put(tv.getName(), tv.getSort());
+		}
+		for (final TermVariable auxVar : mtf.getAuxVars()) {
+			variables.put(auxVar.getName(), auxVar.getSort());
+		}
+	}
+
 }
