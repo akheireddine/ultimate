@@ -421,10 +421,12 @@ public abstract class AbstractBuchiCegarLoop<L extends IIcfgTransition<?>, A ext
 
 			final ContinueDirective cd = lassoCheck.getLassoCheckResult().getContinueDirective();
 			mBenchmarkGenerator.reportLassoAnalysis(lassoCheck);
-			// One file per synthesis scope, never merged: the whole lasso always, the loop alone when it ran.
-			exportLassoTraceReport(mIteration, lassoCheck, false);
-			if (lassoCheck.getLoopDump().hasRun()) {
-				exportLassoTraceReport(mIteration, lassoCheck, true);
+			if (LassoCheck.DUMP_LASSO_TRACES) {
+				// One file per synthesis scope, never merged: the whole lasso always, the loop alone when it ran.
+				exportLassoTraceReport(mIteration, lassoCheck, false);
+				if (lassoCheck.getLoopDump().hasRun()) {
+					exportLassoTraceReport(mIteration, lassoCheck, true);
+				}
 			}
 			try {
 				switch (cd) {

@@ -231,6 +231,15 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	private static final boolean TRACE_CHECK_BASED_FIXPOINT_CHECK = true;
 
 	/**
+	 * Whether every lasso check is dumped to lasso_traces/lasso_trace_<N>[_loop].txt (see
+	 * AbstractBuchiCegarLoop.exportLassoTraceReport). Off, and a compile-time constant so that none of the dump's
+	 * work survives in the build: the dump preprocesses each lasso a second time for its own report
+	 * (precomputeLinearizedLasso), and that cost falls inside the lasso-analysis time that the ULR-vs-UPL comparison
+	 * measures, on both sides. The releases that extract traces for the P-ULR comparison dump them on their own.
+	 */
+	public static final boolean DUMP_LASSO_TRACES = false;
+
+	/**
 	 * If true we check if the loop is terminating even if the stem or the concatenation of stem and loop are already
 	 * infeasible. This allows us to use refineFinite and refineBuchi in the same iteration.
 	 */
@@ -1001,7 +1010,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		final SynthesisDump dump = dumpFor(withStem);
 		dump.mRan = true;
 		dump.mAnalysedStemTF = stemTF;
-		if (!withStem) {
+		if (DUMP_LASSO_TRACES && !withStem) {
 			// The whole-lasso record is precomputed once per LassoCheck, from the real stem; this scope analyses the
 			// loop from the trivial stem, and its dump must show that same formula.
 			precomputeLinearizedLasso(dump, true);
@@ -1251,7 +1260,9 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			mLogger.info("Stem: " + stem);
 			final NestedWord<L> loop = mCounterexample.getLoop().getWord();
 			mLogger.info("Loop: " + loop);
-			precomputeLinearizedLasso(mLassoDump, false);
+			if (DUMP_LASSO_TRACES) {
+				precomputeLinearizedLasso(mLassoDump, false);
+			}
 			mStemFeasibility = checkStemFeasibility();
 			if (mStemFeasibility == TraceCheckResult.INFEASIBLE) {
 				mLogger.info("stem already infeasible");
