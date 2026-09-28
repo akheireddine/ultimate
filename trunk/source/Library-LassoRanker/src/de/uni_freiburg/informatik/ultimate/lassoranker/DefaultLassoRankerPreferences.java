@@ -46,7 +46,7 @@ public class DefaultLassoRankerPreferences implements ILassoRankerPreferences {
 
 	@Override
 	public boolean isEnablePartitioneer() {
-		return true;
+		return false;
 	}
 
 	@Override

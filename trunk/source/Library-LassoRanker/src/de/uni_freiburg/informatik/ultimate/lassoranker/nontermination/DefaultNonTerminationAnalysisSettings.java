@@ -42,7 +42,7 @@ public class DefaultNonTerminationAnalysisSettings implements INonTerminationAna
 
 	@Override
 	public AnalysisType getAnalysis() {
-		return AnalysisType.LINEAR_WITH_GUESSES;
+		return AnalysisType.LINEAR;
 	}
 
 	@Override
