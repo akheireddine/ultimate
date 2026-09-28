@@ -105,7 +105,6 @@ import de.uni_freiburg.informatik.ultimate.lib.smtlibutils.DagSizePrinter;
 import de.uni_freiburg.informatik.ultimate.lib.smtlibutils.SmtUtils;
 import de.uni_freiburg.informatik.ultimate.lib.smtlibutils.SmtUtils.SimplificationTechnique;
 import de.uni_freiburg.informatik.ultimate.lib.tracecheckerutils.Counterexample;
-import de.uni_freiburg.informatik.ultimate.logic.ApplicationTerm;
 import de.uni_freiburg.informatik.ultimate.logic.SMTLIBException;
 import de.uni_freiburg.informatik.ultimate.logic.Script.LBool;
 import de.uni_freiburg.informatik.ultimate.logic.Term;
@@ -602,93 +601,6 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 				la.getArrayIndexSupportingInvariants());
 	}
 
-	/**
-	 * @param laT
-	 *            the over-approximated {@link LassoAnalysis} (termination direction) -- the lasso actually sent to
-	 *            PaSTTeL.
-	 * @param lassoIsLinear
-	 *            whether the lasso contains no genuinely nonlinear arithmetic (see {@link #isLassoLinear}). When
-	 *            true, laT's over-approximation and laNT's under-approximation coincide (NlaHandling only ever
-	 *            affects genuinely nonlinear atoms -- see {@code InequalityConverter}), so either verdict from laT is
-	 *            sound for the real program. When false, a TERMINATING verdict on laT is still sound (termination of
-	 *            an over-approximation implies termination of the real, more restricted program), but a
-	 *            NON_TERMINATING verdict is not (its witness might only exist in behaviour the over-approximation
-	 *            added) -- that case is left to LassoRanker's own non-termination search on laNT, unchanged.
-	 * @return both directions' PaSTTeL results, computed with a single PaSTTeL call ({@code -a both}) on laT.
-	 */
-	private PasttelBothResult tryPasttelBoth(final LassoAnalysis laT, final boolean withStem,
-			final boolean lassoIsLinear) {
-		final Lasso lassoT = resolvePasttelLasso(laT);
-		if (lassoT == null) {
-			return new PasttelBothResult(null, null);
-		}
-		final JsonObject winner = runPasttel(lassoT, Mode.BOTH, withStem);
-		if (winner == null) {
-			mLogger.info("PaSTTeL check (both directions): no usable result, falling back to LassoRanker");
-			return new PasttelBothResult(null, null);
-		}
-		final String status = getStatus(winner);
-		final Map<String, IProgramVar> vars = LassoJsonWriter.collectVariableMap(lassoT);
-		if ("TERMINATING".equals(status)) {
-			return new PasttelBothResult(
-					mapAndLogTermination(winner, vars, laT.getArrayIndexSupportingInvariants()), null);
-		}
-		if ("NON_TERMINATING".equals(status)) {
-			if (!lassoIsLinear) {
-				mLogger.info("PaSTTeL check (both directions): NON_TERMINATING on an overapproximated nonlinear "
-						+ "lasso, not trusted; falling back to LassoRanker");
-				return new PasttelBothResult(null, null);
-			}
-			return new PasttelBothResult(null, mapAndLogNonTermination(winner, vars));
-		}
-		mLogger.info("PaSTTeL check (both directions): " + status + ", falling back to LassoRanker");
-		return new PasttelBothResult(null, null);
-	}
-
-	/**
-	 * @return true iff neither {@code stemTF} nor {@code loopTF} contains a genuinely nonlinear term (a product of
-	 *         two factors that both contain a variable) -- the only thing {@code
-	 *         NlaHandling.OVERAPPROXIMATE}/{@code UNDERAPPROXIMATE} treat differently (see
-	 *         {@code InequalityConverter.tryToConvertAtom}'s {@code TermIsNotAffineException
-	 *         .s_MultipleNonConstantFactors}), so when this holds the two directions' {@link LassoAnalysis}
-	 *         preprocessing is guaranteed semantically equivalent regardless of how each independently renames its
-	 *         own replacement variables.
-	 */
-	private static boolean isLassoLinear(final UnmodifiableTransFormula stemTF,
-			final UnmodifiableTransFormula loopTF) {
-		return !containsNonlinearMultiplication(stemTF.getFormula())
-				&& !containsNonlinearMultiplication(loopTF.getFormula());
-	}
-
-	private static boolean containsNonlinearMultiplication(final Term term) {
-		if (!(term instanceof ApplicationTerm)) {
-			return false;
-		}
-		final ApplicationTerm appTerm = (ApplicationTerm) term;
-		final Term[] params = appTerm.getParameters();
-		if ("*".equals(appTerm.getFunction().getName())) {
-			long nonConstantFactors = 0;
-			for (final Term param : params) {
-				if (param.getFreeVars().length > 0) {
-					nonConstantFactors++;
-				}
-			}
-			if (nonConstantFactors >= 2) {
-				return true;
-			}
-		}
-		for (final Term param : params) {
-			if (containsNonlinearMultiplication(param)) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	private record PasttelBothResult(TerminationArgument terminationArgument,
-			NonTerminationArgument nonTerminationArgument) {
-	}
-
 	private TerminationArgument mapAndLogTermination(final JsonObject winner, final Map<String, IProgramVar> vars,
 			final Set<Term> arrayIndexSupportingInvariants) {
 		final TerminationArgument result =
@@ -699,18 +611,6 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		} else {
 			mLogger.info("PaSTTeL termination check: SUCCESS via " + getTechniqueName(winner) + ", ranking function "
 					+ result.getRankingFunction());
-		}
-		return result;
-	}
-
-	private NonTerminationArgument mapAndLogNonTermination(final JsonObject winner,
-			final Map<String, IProgramVar> vars) {
-		final NonTerminationArgument result = PasttelResultMapper.toNonTerminationArgument(winner, vars);
-		if (result == null) {
-			mLogger.warn("PaSTTeL reported NON_TERMINATING but its certificate could not be mapped back (technique="
-					+ getTechniqueName(winner) + "); falling back to LassoRanker");
-		} else {
-			mLogger.info("PaSTTeL non-termination check: SUCCESS via " + getTechniqueName(winner));
 		}
 		return result;
 	}
@@ -1046,11 +946,9 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		final boolean doNonterminationAnalysis =
 				(!AVOID_NONTERMINATION_CHECK_IF_ARRAYS_ARE_CONTAINED || !containsArrays);
 
-		final boolean pasttelSelected =
-				mRankSynthesisBackend == BuchiAutomizerPreferenceInitializer.RankSynthesisBackend.PASTTEL;
-
-		LassoAnalysis laT = null;
-		PasttelBothResult pasttelBoth = null;
+		// Non-termination is left to LassoRanker's GNTA whatever the backend, so that ULR and UPL analyse it
+		// identically: PaSTTeL is only asked for ranking functions (tryPasttelTermination below). On non-terminating
+		// lassos, GNTA takes milliseconds, less than launching one PaSTTeL process.
 		NonTerminationArgument nonTermArgument = null;
 		if (doNonterminationAnalysis) {
 			LassoAnalysis laNT = null;
@@ -1066,24 +964,13 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 				e.printStackTrace();
 				throw new AssertionError("TermException " + e);
 			}
-			if (pasttelSelected) {
-				laT = buildTerminationLassoAnalysis(withStem, stemTF, loopTF);
-				pasttelBoth = tryPasttelBoth(laT, withStem, isLassoLinear(stemTF, loopTF));
-				nonTermArgument = pasttelBoth.nonTerminationArgument();
-			}
-			// laT's lasso is built with NlaHandling.OVERAPPROXIMATE, laNT's with NlaHandling.UNDERAPPROXIMATE: by
-			// construction, laNT's feasible behaviours are a subset of laT's. A TerminationArgument on laT therefore
-			// already rules out a non-termination witness on laNT -- searching for one would be guaranteed to fail.
-			final boolean terminationAlreadyProven = pasttelBoth != null && pasttelBoth.terminationArgument() != null;
 			try {
-				if (nonTermArgument == null && !terminationAlreadyProven) {
-					recordStrategyAttempt(withStem, "GNTA");
-					final NonTerminationAnalysisSettings settings = constructNTASettings();
-					nonTermArgument = laNT.checkNonTermination(settings);
-					final List<NonterminationAnalysisBenchmark> benchs = laNT.getNonterminationAnalysisBenchmarks();
-					mNonterminationAnalysisBenchmarks.addAll(benchs);
-					dump.mNonterminationAnalysisBenchmarks.addAll(benchs);
-				}
+				recordStrategyAttempt(withStem, "GNTA");
+				final NonTerminationAnalysisSettings settings = constructNTASettings();
+				nonTermArgument = laNT.checkNonTermination(settings);
+				final List<NonterminationAnalysisBenchmark> benchs = laNT.getNonterminationAnalysisBenchmarks();
+				mNonterminationAnalysisBenchmarks.addAll(benchs);
+				dump.mNonterminationAnalysisBenchmarks.addAll(benchs);
 			} catch (final SMTLIBException e) {
 				e.printStackTrace();
 				throw new AssertionError("SMTLIBException " + e);
@@ -1100,9 +987,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			}
 		}
 
-		if (laT == null) {
-			laT = buildTerminationLassoAnalysis(withStem, stemTF, loopTF);
-		}
+		final LassoAnalysis laT = buildTerminationLassoAnalysis(withStem, stemTF, loopTF);
 
 		final List<RankingTemplate> rankingFunctionTemplates = new ArrayList<>();
 		rankingFunctionTemplates.add(new AffineTemplate());
@@ -1142,8 +1027,9 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		}
 		// }
 
-		TerminationArgument termArg =
-				pasttelBoth != null ? pasttelBoth.terminationArgument() : tryPasttelTermination(laT, withStem);
+		// PaSTTeL first when it is the backend (null otherwise, or when it does not conclude), then LassoRanker's
+		// templates as the fallback.
+		TerminationArgument termArg = tryPasttelTermination(laT, withStem);
 		if (termArg == null) {
 			termArg = tryTemplatesAndComputePredicates(laT, rankingFunctionTemplates, stemTF, loopTF, withStem);
 		}
