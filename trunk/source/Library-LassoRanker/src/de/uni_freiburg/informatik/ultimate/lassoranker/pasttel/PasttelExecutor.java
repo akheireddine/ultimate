@@ -66,8 +66,8 @@ public final class PasttelExecutor {
 
 	/**
 	 * @return the parsed top-level JSON object of PaSTTeL's AnalysisReport, or {@code null} if PaSTTeL did not
-	 *         produce a usable result (timeout, non-zero exit, malformed output) -- callers should fall back to
-	 *         LassoRanker in that case, not treat it as an error.
+	 *         produce a usable result (timeout, non-zero exit, malformed output) -- callers should treat that as
+	 *         "no argument found", not as an error.
 	 * @throws IOException
 	 *             if the binary itself could not be launched (e.g. not found).
 	 */

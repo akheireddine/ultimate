@@ -576,25 +576,22 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	}
 
 	/**
-	 * @return a termination argument found by PaSTTeL for {@code la}'s lasso, or {@code null} if PaSTTeL is not the
-	 *         selected backend, could not be run, or did not conclude termination -- callers must fall back to
-	 *         LassoRanker's own ranking-function templates in that case.
+	 * @return a termination argument found by PaSTTeL for {@code la}'s lasso, or {@code null} if PaSTTeL could not be
+	 *         run or did not conclude termination. There is no LassoRanker fallback: {@code null} leaves the lasso
+	 *         without a ranking function, exactly as a LassoRanker run whose templates all fail.
 	 */
 	private TerminationArgument tryPasttelTermination(final LassoAnalysis la, final boolean withStem) {
-		if (mRankSynthesisBackend != BuchiAutomizerPreferenceInitializer.RankSynthesisBackend.PASTTEL) {
-			return null;
-		}
 		final Lasso lasso = resolvePasttelLasso(la);
 		if (lasso == null) {
 			return null;
 		}
 		final JsonObject winner = runPasttel(lasso, Mode.TERMINATE, withStem);
 		if (winner == null) {
-			mLogger.info("PaSTTeL termination check: no usable result, falling back to LassoRanker");
+			mLogger.info("PaSTTeL termination check: no usable result, no ranking function");
 			return null;
 		}
 		if (!"TERMINATING".equals(getStatus(winner))) {
-			mLogger.info("PaSTTeL termination check: " + getStatus(winner) + ", falling back to LassoRanker");
+			mLogger.info("PaSTTeL termination check: " + getStatus(winner) + ", no ranking function");
 			return null;
 		}
 		return mapAndLogTermination(winner, LassoJsonWriter.collectVariableMap(lasso),
@@ -607,7 +604,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 				PasttelResultMapper.toTerminationArgument(winner, vars, arrayIndexSupportingInvariants);
 		if (result == null) {
 			mLogger.warn("PaSTTeL reported TERMINATING but its certificate could not be mapped back (technique="
-					+ getTechniqueName(winner) + "); falling back to LassoRanker");
+					+ getTechniqueName(winner) + "); no ranking function");
 		} else {
 			mLogger.info("PaSTTeL termination check: SUCCESS via " + getTechniqueName(winner) + ", ranking function "
 					+ result.getRankingFunction());
@@ -626,7 +623,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		final Collection<Lasso> lassos = la.getLassos();
 		if (lassos.size() != 1) {
 			mLogger.warn("PaSTTeL needs exactly one preprocessed Lasso, got " + lassos.size()
-					+ "; falling back to LassoRanker");
+					+ "; no ranking function");
 			return null;
 		}
 		return lassos.iterator().next();
@@ -635,8 +632,8 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 	/**
 	 * Serializes {@code lasso} to PaSTTeL's JSON schema, runs the PaSTTeL binary on it, and returns the "winner"
 	 * object of its AnalysisReport (see PaSTTeL's report_json.h), or {@code null} on any failure -- a missing
-	 * binary, a timeout, a crash, or unparsable output. PaSTTeL is an optional acceleration path with a mandatory
-	 * fallback, so every failure mode here is deliberately absorbed rather than propagated.
+	 * binary, a timeout, a crash, or unparsable output. Every failure mode is absorbed rather than propagated: the
+	 * lasso then simply gets no ranking function.
 	 *
 	 * The input (and, if any, output) JSON is written to a throwaway temp file that is deleted right after this
 	 * call, unless "Dump SMT script to file" is enabled, in which case both are kept under "To the following
@@ -667,7 +664,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			}
 			return report == null ? null : report.getAsJsonObject("winner");
 		} catch (final Exception e) {
-			mLogger.warn("PaSTTeL invocation failed, falling back to LassoRanker: " + e.getMessage());
+			mLogger.warn("PaSTTeL invocation failed, no ranking function: " + e.getMessage());
 			return null;
 		} finally {
 			if (inFile != null && !keepFiles) {
@@ -748,7 +745,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 		final IPreferenceProvider baPref = mServices.getPreferenceProvider(Activator.PLUGIN_ID);
 		// PaSTTeL's JSON schema has no notion of the multiple independent lasso components the partitioner can
 		// produce (see LassoJsonWriter): once PaSTTeL is the selected backend, disable it for every LassoAnalysis
-		// this LassoCheck builds (including its LassoRanker fallback runs), so partitioning stays consistent
+		// this LassoCheck builds (including the laNT of GNTA), so partitioning stays consistent
 		// within a session instead of depending on whether a given lasso happened to go through PaSTTeL.
 		final boolean disablePartitioneer = mRankSynthesisBackend == BuchiAutomizerPreferenceInitializer.RankSynthesisBackend.PASTTEL;
 		return new DefaultLassoRankerPreferences() {
@@ -989,6 +986,51 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 
 		final LassoAnalysis laT = buildTerminationLassoAnalysis(withStem, stemTF, loopTF);
 
+		// One rank-synthesis backend, never both: with PaSTTeL, a lasso it cannot prove terminating gets no ranking
+		// function (and the program ends UNKNOWN if no other argument is found), as with LassoRanker when all its
+		// templates fail. LassoRanker's templates are not tried as a fallback.
+		final TerminationArgument termArg;
+		if (mRankSynthesisBackend == BuchiAutomizerPreferenceInitializer.RankSynthesisBackend.PASTTEL) {
+			termArg = tryPasttelTermination(laT, withStem);
+		} else {
+			termArg = tryTemplatesAndComputePredicates(laT, constructLassoRankerTemplates(), stemTF, loopTF,
+					withStem);
+		}
+		assert nonTermArgument == null || termArg == null : " terminating and nonterminating";
+		if (termArg != null) {
+			mBspmResult = mBspm.computePredicates(termArg, mRemoveSuperfluousSupportingInvariants, stemTF, loopTF,
+					mModifiableGlobalsAtHonda);
+			dump.mBspmResult = mBspmResult;
+			return SynthesisResult.TERMINATING;
+		}
+		if (nonTermArgument != null) {
+			return SynthesisResult.NONTERMINATING;
+		}
+		return SynthesisResult.UNKNOWN;
+	}
+
+	private LassoAnalysis buildTerminationLassoAnalysis(final boolean withStem,
+			final UnmodifiableTransFormula stemTF, final UnmodifiableTransFormula loopTF) {
+		try {
+			final boolean overapproximateArrayIndexConnection = true;
+			final LassoAnalysis laT = new LassoAnalysis(mCsToolkit, stemTF, loopTF, mModifiableGlobalsAtHonda,
+					mSmtSymbols,
+					constructLassoRankerPreferences(withStem, overapproximateArrayIndexConnection,
+							NlaHandling.OVERAPPROXIMATE, AnalysisTechnique.RANKING_FUNCTIONS_SUPPORTING_INVARIANTS),
+					mServices, mSimplificationTechnique);
+			mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
+			dumpFor(withStem).mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
+			return laT;
+		} catch (final TermException e) {
+			e.printStackTrace();
+			throw new AssertionError("TermException " + e);
+		}
+	}
+
+	/**
+	 * @return LassoRanker's ranking-function templates, in the order they are tried.
+	 */
+	private List<RankingTemplate> constructLassoRankerTemplates() {
 		final List<RankingTemplate> rankingFunctionTemplates = new ArrayList<>();
 		rankingFunctionTemplates.add(new AffineTemplate());
 
@@ -1026,42 +1068,7 @@ public class LassoCheck<L extends IIcfgTransition<?>> {
 			rankingFunctionTemplates.add(new PiecewiseTemplate(4));
 		}
 		// }
-
-		// PaSTTeL first when it is the backend (null otherwise, or when it does not conclude), then LassoRanker's
-		// templates as the fallback.
-		TerminationArgument termArg = tryPasttelTermination(laT, withStem);
-		if (termArg == null) {
-			termArg = tryTemplatesAndComputePredicates(laT, rankingFunctionTemplates, stemTF, loopTF, withStem);
-		}
-		assert nonTermArgument == null || termArg == null : " terminating and nonterminating";
-		if (termArg != null) {
-			mBspmResult = mBspm.computePredicates(termArg, mRemoveSuperfluousSupportingInvariants, stemTF, loopTF,
-					mModifiableGlobalsAtHonda);
-			dump.mBspmResult = mBspmResult;
-			return SynthesisResult.TERMINATING;
-		}
-		if (nonTermArgument != null) {
-			return SynthesisResult.NONTERMINATING;
-		}
-		return SynthesisResult.UNKNOWN;
-	}
-
-	private LassoAnalysis buildTerminationLassoAnalysis(final boolean withStem,
-			final UnmodifiableTransFormula stemTF, final UnmodifiableTransFormula loopTF) {
-		try {
-			final boolean overapproximateArrayIndexConnection = true;
-			final LassoAnalysis laT = new LassoAnalysis(mCsToolkit, stemTF, loopTF, mModifiableGlobalsAtHonda,
-					mSmtSymbols,
-					constructLassoRankerPreferences(withStem, overapproximateArrayIndexConnection,
-							NlaHandling.OVERAPPROXIMATE, AnalysisTechnique.RANKING_FUNCTIONS_SUPPORTING_INVARIANTS),
-					mServices, mSimplificationTechnique);
-			mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
-			dumpFor(withStem).mPreprocessingBenchmarks.add(laT.getPreprocessingBenchmark());
-			return laT;
-		} catch (final TermException e) {
-			e.printStackTrace();
-			throw new AssertionError("TermException " + e);
-		}
+		return rankingFunctionTemplates;
 	}
 
 	private TerminationArgument tryTemplatesAndComputePredicates(final LassoAnalysis la,

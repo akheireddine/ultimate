@@ -48,8 +48,7 @@ import de.uni_freiburg.informatik.ultimate.logic.Term;
  *
  * Every mapping method returns {@code null} if the certificate cannot be faithfully reconstructed (an unresolvable
  * variable name, a non-integer ranking-function coefficient where an exact integer is required, an unrecognized
- * template name in technique_name): callers must treat that as "no usable result", not as an error, and fall back to
- * LassoRanker.
+ * template name in technique_name): callers must treat that as "no usable result", not as an error.
  */
 public final class PasttelResultMapper {
 
